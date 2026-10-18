@@ -874,6 +874,15 @@ int LiGetPendingAudioFrames(void);
 // negotiated audio frame duration.
 int LiGetPendingAudioDuration(void);
 
+// Only valid while AudioRendererDecodeAndPlaySample runs, on its thread: the
+// RTP timestamp of the audio being decoded and when its packet was received.
+// The timestamp is the host's, in milliseconds from the start of its audio
+// stream (Sunshine steps it by the packet duration). The receive time is in
+// LiGetMicroseconds() time; it is when the packet left the RTP queue for one
+// it held back to reorder or recover, and 0 for the concealment of a lost
+// packet, whose timestamp is the one that packet would have had.
+void LiGetCurrentAudioSampleInfo(uint32_t* rtpTimestamp, uint64_t* receiveTimeUs);
+
 // Returns a pointer to a struct containing various statistics about the RTP audio stream.
 // The data should be considered read-only and must not be modified.
 typedef struct _RTP_AUDIO_STATS {

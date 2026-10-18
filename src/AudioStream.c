@@ -28,7 +28,13 @@ static uint8_t opusHeaderByte;
 typedef struct _QUEUE_AUDIO_PACKET_HEADER {
     LINKED_BLOCKING_QUEUE_ENTRY lentry;
     int size;
+    uint64_t receiveTimeUs;
 } QUEUED_AUDIO_PACKET_HEADER, *PQUEUED_AUDIO_PACKET_HEADER;
+
+// The audio being decoded, for LiGetCurrentAudioSampleInfo().
+static uint32_t currentTimestamp;
+static uint64_t currentReceiveTimeUs;
+static bool haveTimestamp;
 
 typedef struct _QUEUED_AUDIO_PACKET {
     QUEUED_AUDIO_PACKET_HEADER header;
@@ -70,6 +76,7 @@ int initializeAudioStream(void) {
     RtpaInitializeQueue(&rtpAudioQueue);
     lastSeq = 0;
     receivedDataFromPeer = false;
+    haveTimestamp = false;
     pingThreadStarted = false;
     firstReceiveTime = 0;
     audioDecryptionCtx = PltCreateCryptoContext();
@@ -164,11 +171,16 @@ static void decodeInputData(PQUEUED_AUDIO_PACKET packet) {
     // packet. Trigger packet loss concealment logic in libopus by
     // invoking the decoder with a NULL buffer.
     if (packet->header.size == 0) {
+        currentTimestamp += AudioPacketDuration;
+        currentReceiveTimeUs = 0;
         AudioCallbacks.decodeAndPlaySample(NULL, 0);
         return;
     }
 
     PRTP_PACKET rtp = (PRTP_PACKET)&packet->data[0];
+    currentTimestamp = rtp->timestamp;
+    currentReceiveTimeUs = packet->header.receiveTimeUs;
+    haveTimestamp = true;
     if (lastSeq != 0 && (unsigned short)(lastSeq + 1) != rtp->sequenceNumber) {
         Limelog("Network dropped audio data (expected %d, but received %d)\n", lastSeq + 1, rtp->sequenceNumber);
     }
@@ -268,6 +280,7 @@ static void AudioReceiveThreadProc(void* context) {
         }
 
         packet->header.size = recvUdpSocket(rtpSocket, &packet->data[0], MAX_PACKET_SIZE, useSelect);
+        packet->header.receiveTimeUs = PltGetMicroseconds();
         if (packet->header.size < 0) {
             Limelog("Audio Receive: recvUdpSocket() failed: %d\n", (int)LastSocketError());
             ListenerCallbacks.connectionTerminated(LastSocketFail());
@@ -351,6 +364,7 @@ static void AudioReceiveThreadProc(void* context) {
                 while ((queuedPacket = (PQUEUED_AUDIO_PACKET)RtpaGetQueuedPacket(&rtpAudioQueue, sizeof(QUEUED_AUDIO_PACKET_HEADER), &length)) != NULL) {
                     // Populate header data (not preserved in queued packets)
                     queuedPacket->header.size = length;
+                    queuedPacket->header.receiveTimeUs = PltGetMicroseconds();
 
                     if ((AudioCallbacks.capabilities & CAPABILITY_DIRECT_SUBMIT) == 0) {
                         if (!queuePacketToLbq(&queuedPacket)) {
@@ -475,6 +489,11 @@ int LiGetPendingAudioFrames(void) {
 
 int LiGetPendingAudioDuration(void) {
     return LiGetPendingAudioFrames() * AudioPacketDuration;
+}
+
+void LiGetCurrentAudioSampleInfo(uint32_t* rtpTimestamp, uint64_t* receiveTimeUs) {
+    *rtpTimestamp = haveTimestamp ? currentTimestamp : 0;
+    *receiveTimeUs = haveTimestamp ? currentReceiveTimeUs : 0;
 }
 
 const RTP_AUDIO_STATS* LiGetRTPAudioStats(void) {
